@@ -6,6 +6,19 @@ from datetime import datetime
 import requests
 from io import BytesIO
 import webbrowser
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.pdfgen import canvas
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_CENTER, TA_RIGHT
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+# Đăng ký font Arial hỗ trợ Unicode (tiếng Việt)
+pdfmetrics.registerFont(TTFont('Arial', 'C:/Windows/Fonts/arial.ttf'))
+pdfmetrics.registerFont(TTFont('Arial-Bold', 'C:/Windows/Fonts/arialbd.ttf'))
 
 # Kết nối tới MySQL
 def connect_db():
@@ -102,7 +115,7 @@ class ModernQuanAnApp:
             self.display_menu_item(menu)
         
         # Order section
-        order_frame = ttk.Frame(main_frame, width=300, style="Order.TFrame")
+        order_frame = ttk.Frame(main_frame, width=350, style="Order.TFrame")
         order_frame.pack(side=tk.RIGHT, fill=tk.Y)
         order_frame.pack_propagate(False)
         
@@ -328,47 +341,193 @@ class ModernQuanAnApp:
             messagebox.showwarning("Thông báo", "Đơn hàng chưa có món ăn!")
             return
 
-        # Tạo mã hóa đơn và STT
+        # Lấy ngày giờ hiện tại
         now = datetime.now()
         date = now.strftime("%Y-%m-%d")
         time = now.strftime("%H:%M:%S")
         stt = self.get_stt_for_today(date)
 
-        invoice = f"""
-╔════════════════════════════════════╗
-║        HÓA ĐƠN #{stt:04d}          ║
-╠════════════════════════════════════╣
-║ Ngày: {date} - Giờ: {time}    ║
-╠════════════════════════════════════╣
-"""
-        for item in self.order_items:
-            invoice += f"║ {item['ten_mon'][:20]:<20} {item['so_luong']:>2} x {item['don_gia']:>7,.0f} ║\n"
+        # Gán lại để dùng khi gọi show_invoice_preview
+        self.invoice_filename = f"invoice_{stt:04d}.pdf"
+        self.invoice_number = stt
+        self.date = date
 
-        invoice += f"""╠════════════════════════════════════╣
-║ Tổng tiền: {self.total_price:>20,.0f} VND ║
-╚════════════════════════════════════╝
-"""
-        # Hiển thị hóa đơn trong cửa sổ mới
+        # Tạo buffer PDF
+        pdf_buffer = BytesIO()
+
+        # Tạo document
+        doc = SimpleDocTemplate(pdf_buffer,
+                                pagesize=A4,
+                                rightMargin=20 * mm,
+                                leftMargin=20 * mm,
+                                topMargin=20 * mm,
+                                bottomMargin=20 * mm)
+
+        styles = getSampleStyleSheet()
+
+        # Custom styles
+        title_style = ParagraphStyle(
+            'Title',
+            parent=styles['Heading1'],
+            fontName='Arial-Bold',
+            fontSize=18,
+            alignment=TA_CENTER,
+            spaceAfter=20
+        )
+
+        header_style = ParagraphStyle(
+            'Header',
+            parent=styles['Heading2'],
+            fontName='Arial',
+            fontSize=12,
+            alignment=TA_CENTER,
+            spaceAfter=10
+        )
+
+        normal_style = ParagraphStyle(
+            'NormalCustom',
+            parent=styles['Normal'],
+            fontName='Arial',
+            fontSize=10
+        )
+
+        total_style = ParagraphStyle(
+            'Total',
+            parent=styles['Normal'],
+            fontName='Arial-Bold',
+            fontSize=12,
+            alignment=TA_RIGHT,
+            spaceBefore=10
+        )
+
+        story = []
+
+        # Tiêu đề hóa đơn
+        story.append(Paragraph("NHÀ HÀNG ABC", title_style))
+        story.append(Paragraph(f"HÓA ĐƠN #{stt:04d}", header_style))
+
+        # Thông tin ngày giờ
+        info_data = [
+            [Paragraph(f"<b>Ngày:</b> {date}", normal_style),
+            Paragraph(f"<b>Giờ:</b> {time}", normal_style)],
+        ]
+        info_table = Table(info_data, colWidths=[100 * mm, 100 * mm])
+        info_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+        ]))
+        story.append(info_table)
+        story.append(Spacer(1, 15))
+
+        # Bảng món ăn
+        story.append(Paragraph("DANH SÁCH MÓN ĂN", header_style))
+        item_data = [["STT", "Tên món", "Số lượng", "Đơn giá", "Thành tiền"]]
+        for idx, item in enumerate(self.order_items, start=1):
+            item_data.append([
+                str(idx),
+                item['ten_mon'],
+                str(item['so_luong']),
+                f"{item['don_gia']:,.0f} VND",
+                f"{item['so_luong'] * item['don_gia']:,.0f} VND"
+            ])
+        item_table = Table(item_data, colWidths=[15 * mm, 70 * mm, 25 * mm, 40 * mm, 40 * mm])
+        item_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#CCCCCC')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('ALIGN', (1, 0), (1, -1), 'LEFT'),
+            ('ALIGN', (3, 0), (-1, -1), 'RIGHT'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Arial-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+            ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#DDDDDD')),
+            ('FONTSIZE', (0, 1), (-1, -1), 9),
+            ('FONTNAME', (0, 1), (-1, -1), 'Arial'),
+        ]))
+        story.append(item_table)
+
+        # Tổng tiền
+        story.append(Spacer(1, 20))
+        story.append(Paragraph(f"TỔNG CỘNG: {self.total_price:,.0f} VND", total_style))
+        story.append(Spacer(1, 30))
+
+        # Chân trang
+        footer = Paragraph(
+            "Cảm ơn quý khách!<br/>Hẹn gặp lại quý khách lần sau",
+            ParagraphStyle(
+                'Footer',
+                parent=styles['Normal'],
+                fontName='Arial',
+                alignment=TA_CENTER,
+                fontSize=10,
+                textColor=colors.grey,
+                spaceBefore=20
+            )
+        )
+        story.append(footer)
+
+        # Xuất PDF
+        doc.build(story)
+        # ✅ Ghi PDF ra file thật
+        with open(self.invoice_filename, 'wb') as f:
+            f.write(pdf_buffer.getvalue())
+
+        # Mở cửa sổ xem trước
+        self.show_invoice_preview(filename=self.invoice_filename, stt=stt, date=date)
+
+    def show_invoice_preview(self, filename, stt, date):
+        """Hiển thị cửa sổ xem trước hóa đơn và các nút chức năng"""
         invoice_window = tk.Toplevel(self.root)
         invoice_window.title(f"Hóa đơn #{stt}")
-        invoice_window.geometry("400x500")
+        invoice_window.geometry("800x600")
         
-        text = tk.Text(invoice_window, font=("Courier New", 12), padx=10, pady=10)
-        text.insert(tk.END, invoice)
-        text.config(state=tk.DISABLED)
-        text.pack(fill=tk.BOTH, expand=True)
+        # Frame chứa PDF viewer (cần cài đặt thư viện như pdf2image hoặc tkinterPDF)
+        pdf_frame = ttk.Frame(invoice_window)
+        pdf_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
+        # Ở đây bạn cần thêm code để hiển thị PDF
+        # Có thể sử dụng thư viện như pdf2image để hiển thị hình ảnh PDF
+        # Hoặc sử dụng tkinterPDF nếu muốn hiển thị trực tiếp
+        
+        # Tạm thời hiển thị thông báo
+        label = ttk.Label(pdf_frame, text=f"Đã tạo hóa đơn: {filename}", font=('Arial', 12))
+        label.pack(expand=True)
+        
+        # Frame chứa các nút
         btn_frame = ttk.Frame(invoice_window)
         btn_frame.pack(fill=tk.X, padx=10, pady=10)
         
-        ttk.Button(btn_frame, text="In hóa đơn", command=lambda: self.print_to_printer(invoice)).pack(side=tk.LEFT)
-        ttk.Button(btn_frame, text="Lưu và đóng", command=lambda: self.save_and_close(invoice_window, stt, date)).pack(side=tk.RIGHT)
-    
-    def print_to_printer(self, invoice):
-        # Trong thực tế, bạn có thể sử dụng thư viện như win32print để in thực sự
-        # Ở đây chúng ta chỉ hiển thị thông báo
-        messagebox.showinfo("In hóa đơn", "Đã gửi yêu cầu in hóa đơn đến máy in!")
-    
+        ttk.Button(btn_frame, text="In hóa đơn", 
+                command=lambda: self.print_pdf(filename)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Mở file", 
+                command=lambda: self.open_pdf(filename)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Lưu và đóng", 
+                command=lambda: self.save_and_close(invoice_window, stt, date)).pack(side=tk.RIGHT)
+
+    def print_pdf(self, filename):
+        """In file PDF"""
+        try:
+            import os
+            if os.name == 'nt':  # Windows
+                os.startfile(filename, "print")
+            else:  # MacOS và Linux
+                os.system(f'lpr "{filename}"')
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Không thể in file: {str(e)}")
+
+    def open_pdf(self, filename):
+        """Mở file PDF bằng ứng dụng mặc định"""
+        try:
+            import os
+            import subprocess
+            if os.name == 'nt':  # Windows
+                os.startfile(filename)
+            elif os.name == 'posix':  # MacOS và Linux
+                subprocess.run(['open', filename] if sys.platform == 'darwin' else ['xdg-open', filename])
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Không thể mở file: {str(e)}")
+
     def save_and_close(self, window, stt, date):
         # Lưu hóa đơn vào CSDL
         self.save_invoice(stt, date)
